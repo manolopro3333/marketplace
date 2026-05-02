@@ -75,6 +75,7 @@ function Invoke-SpicetifyWithOutput {
             Stop-Job -Job $job
             $output = "Timeout: Command took longer than 30 seconds"
             $exitCode = 1
+            # wa
         } else {
             $output = (Receive-Job -Job $job | Out-String).Trim()
             if ($job.JobStateInfo.State -eq [System.Management.Automation.JobState]::Failed) {
