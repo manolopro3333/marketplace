@@ -136,8 +136,21 @@ Write-Host -Object 'Unzipping and installing...' -ForegroundColor 'Cyan'
 Expand-Archive -Path $marketArchivePath -DestinationPath $marketAppPath -Force
 Move-Item -Path "$unpackedFolderPath\*" -Destination $marketAppPath -Force
 Remove-Item -Path $marketArchivePath, $unpackedFolderPath -Force
-Invoke-Spicetify "config" "custom_apps" "spicetify-marketplace-" "-q"
-Invoke-Spicetify "config" "custom_apps" "marketplace"
+
+# Disable previous marketplace version
+$disableResult = Invoke-Spicetify "config" "custom_apps" "spicetify-marketplace-" "-q"
+if ($LASTEXITCODE -ne 0) {
+    Write-Host -Object "Warning: Could not disable old marketplace version" -ForegroundColor 'Yellow'
+}
+
+# Enable new marketplace
+$enableResult = Invoke-Spicetify "config" "custom_apps" "marketplace"
+if ($LASTEXITCODE -ne 0) {
+    Write-Host -Object "Error: Could not enable marketplace" -ForegroundColor 'Red'
+    Write-Host -Object "Details: $enableResult" -ForegroundColor 'Red'
+    return
+}
+
 Invoke-Spicetify "config" "inject_css" "1" "replace_colors" "1"
 
 Write-Host -Object 'Downloading placeholder theme...' -ForegroundColor 'Cyan'
@@ -157,13 +170,22 @@ if ($isThemeInstalled -and ($currentTheme -ne 'marketplace')) {
         ('&Yes', '&No'),
         0
     )
-    if ($choice = 1) { $setTheme = $false }
+    if ($choice -eq 1) { $setTheme = $false }
 }
 if ($setTheme) {
     Invoke-Spicetify "config" "current_theme" "marketplace"
 }
-Invoke-Spicetify "backup"
-Invoke-Spicetify "apply"
+
+$backupResult = Invoke-Spicetify "backup"
+if ($LASTEXITCODE -ne 0) {
+    Write-Host -Object "Warning: Backup encountered an issue" -ForegroundColor 'Yellow'
+}
+
+$applyResult = Invoke-Spicetify "apply"
+if ($LASTEXITCODE -ne 0) {
+    Write-Host -Object "Error: Could not apply changes" -ForegroundColor 'Red'
+    return
+}
 
 Write-Host -Object 'Done!' -ForegroundColor 'Green'
 Write-Host -Object 'If nothing has happened, check the messages above for errors'
