@@ -86,6 +86,37 @@ function Get-SpicetifyUserDataPath {
     return Join-Path -Path $env:APPDATA -ChildPath 'spicetify'
 }
 
+function Get-SpicetifyCurrentTheme {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$ConfigPath
+    )
+
+    if (-not (Test-Path -Path $ConfigPath -PathType 'Leaf')) {
+        return ''
+    }
+
+    $inSettingSection = $false
+    foreach ($line in Get-Content -Path $ConfigPath -ErrorAction 'SilentlyContinue') {
+        $trimmedLine = $line.Trim()
+
+        if ($trimmedLine -match '^\[(.+)\]$') {
+            $inSettingSection = $Matches[1] -eq 'Setting'
+            continue
+        }
+
+        if (-not $inSettingSection) {
+            continue
+        }
+
+        if ($trimmedLine -match '^current_theme\s*=\s*(.*)$') {
+            return $Matches[1].Trim()
+        }
+    }
+
+    return ''
+}
+
 Write-Host -Object 'Setting up...' -ForegroundColor 'Cyan'
 
 Write-Host -Object 'Verifying Spicetify installation...' -ForegroundColor 'Gray'
@@ -113,6 +144,7 @@ try {
 if (-not (Test-Path -Path $spiceUserDataPath -PathType 'Container' -ErrorAction 'SilentlyContinue')) {
     $spiceUserDataPath = "$env:APPDATA\spicetify"
 }
+$spicetifyConfigPath = Join-Path -Path $spiceUserDataPath -ChildPath 'config-xpui.ini'
 $marketAppPath = "$spiceUserDataPath\CustomApps\marketplace"
 $marketThemePath = "$spiceUserDataPath\Themes\marketplace"
 
@@ -121,7 +153,7 @@ $isThemeInstalled = Test-Path -Path (Join-Path -Path $spiceUserDataPath -ChildPa
 Write-Host -Object "Theme installed: $isThemeInstalled" -ForegroundColor 'Gray'
 
 Write-Host -Object 'Getting current theme...' -ForegroundColor 'Gray'
-$currentTheme = (Invoke-SpicetifyWithOutput "config" "current_theme").Output
+$currentTheme = Get-SpicetifyCurrentTheme -ConfigPath $spicetifyConfigPath
 Write-Host -Object "Current theme: $currentTheme" -ForegroundColor 'Gray'
 $setTheme = $true
 
