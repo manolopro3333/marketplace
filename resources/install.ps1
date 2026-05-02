@@ -78,6 +78,14 @@ function Invoke-SpicetifyWithOutput {
     }
 }
 
+function Get-SpicetifyUserDataPath {
+    if ($env:SPICETIFY_CONFIG) {
+        return $env:SPICETIFY_CONFIG
+    }
+
+    return Join-Path -Path $env:APPDATA -ChildPath 'spicetify'
+}
+
 Write-Host -Object 'Setting up...' -ForegroundColor 'Cyan'
 
 Write-Host -Object 'Verifying Spicetify installation...' -ForegroundColor 'Gray'
@@ -90,16 +98,14 @@ Write-Host -Object 'Spicetify found!' -ForegroundColor 'Green'
 
 Write-Host -Object 'Getting Spicetify paths...' -ForegroundColor 'Gray'
 try {
-    $result = Invoke-SpicetifyWithOutput "path" "userdata"
-    if ($result.ExitCode -ne 0) {
-        Write-Host -Object "Error from Spicetify:" -ForegroundColor 'Red'
-        Write-Host -Object $result.Output -ForegroundColor 'Red'
-        return
+    $spiceUserDataPath = Get-SpicetifyUserDataPath
+    if ([string]::IsNullOrWhiteSpace($spiceUserDataPath)) {
+        throw 'Unable to determine the Spicetify user data path.'
     }
-    $spiceUserDataPath = $result.Output
+
     Write-Host -Object "User data path: $spiceUserDataPath" -ForegroundColor 'Gray'
 } catch {
-    Write-Host -Object "Error running Spicetify:" -ForegroundColor 'Red'
+    Write-Host -Object "Error determining Spicetify path:" -ForegroundColor 'Red'
     Write-Host -Object $_.Exception.Message.Trim() -ForegroundColor 'Red'
     return
 }
@@ -124,14 +130,6 @@ $setTheme = $true
 
 Write-Host -Object 'Removing and creating Marketplace folders...' -ForegroundColor 'Cyan'
 try {
-    Write-Host -Object '  Retrieving Spicetify paths...' -ForegroundColor 'Gray'
-    $result = Invoke-SpicetifyWithOutput "path" "userdata"
-    if ($result.ExitCode -ne 0) {
-        Write-Host -Object "Error: Failed to get Spicetify path. Details:" -ForegroundColor 'Red'
-        Write-Host -Object $result.Output -ForegroundColor 'Red'
-        return
-    }
-
     Write-Host -Object "  Removing old marketplace files..." -ForegroundColor 'Gray'
     Remove-Item -Path $marketAppPath, $marketThemePath -Recurse -Force -ErrorAction 'SilentlyContinue' | Out-Null
     
