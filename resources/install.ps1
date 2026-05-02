@@ -117,10 +117,7 @@ $marketAppPath = "$spiceUserDataPath\CustomApps\marketplace"
 $marketThemePath = "$spiceUserDataPath\Themes\marketplace"
 
 Write-Host -Object 'Checking theme installation...' -ForegroundColor 'Gray'
-$isThemeInstalled = $(
-    Invoke-Spicetify "path" "-s" | Out-Null
-    -not $LASTEXITCODE
-)
+$isThemeInstalled = Test-Path -Path (Join-Path -Path $spiceUserDataPath -ChildPath 'Themes') -PathType 'Container'
 Write-Host -Object "Theme installed: $isThemeInstalled" -ForegroundColor 'Gray'
 
 Write-Host -Object 'Getting current theme...' -ForegroundColor 'Gray'
