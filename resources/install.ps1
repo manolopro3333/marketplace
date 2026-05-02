@@ -77,7 +77,11 @@ function Invoke-SpicetifyWithOutput {
             $exitCode = 1
         } else {
             $output = (Receive-Job -Job $job | Out-String).Trim()
-            $exitCode = $job.JobStateInfo.State -eq [System.Management.Automation.JobState]::Failed ? 1 : 0
+            if ($job.JobStateInfo.State -eq [System.Management.Automation.JobState]::Failed) {
+                $exitCode = 1
+            } else {
+                $exitCode = 0
+            }
         }
         Remove-Job -Job $job -Force
     } catch {
