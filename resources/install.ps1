@@ -7,6 +7,32 @@ param(
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
+$spicetifyCommand = Get-Command -Name 'spicetify' -ErrorAction 'SilentlyContinue'
+if ($spicetifyCommand) {
+    $spicetifyExecutable = $spicetifyCommand.Source
+}
+if (-not $spicetifyExecutable) {
+    $candidatePaths = @(
+        "$env:LOCALAPPDATA\spicetify\spicetify.exe",
+        "$env:LOCALAPPDATA\spicetify\spicetify",
+        "$HOME\.spicetify\spicetify.exe",
+        "$HOME\.spicetify\spicetify"
+    )
+
+    foreach ($candidatePath in $candidatePaths) {
+        if (Test-Path -Path $candidatePath -PathType 'Leaf') {
+            $spicetifyExecutable = (Resolve-Path -Path $candidatePath).Path
+            break
+        }
+    }
+}
+
+if (-not $spicetifyExecutable) {
+    Write-Host -Object 'Spicetify not found.' -ForegroundColor 'Yellow'
+    Write-Host -Object 'Install the forked CLI first, then open a new terminal and rerun Marketplace.' -ForegroundColor 'Red'
+    return
+}
+
 function Invoke-Spicetify {
     param (
         [Parameter(Mandatory = $true, Position = 0, ValueFromRemainingArguments = $true)]
@@ -19,7 +45,7 @@ function Invoke-Spicetify {
     }
     $spicetifyArgs += $Arguments
     
-    & spicetify $spicetifyArgs
+    & $spicetifyExecutable @spicetifyArgs
     return $LASTEXITCODE
 }
 
@@ -35,7 +61,7 @@ function Invoke-SpicetifyWithOutput {
     }
     $spicetifyArgs += $Arguments
     
-    $output = (& spicetify $spicetifyArgs 2>&1 | Out-String).Trim()
+    $output = (& $spicetifyExecutable @spicetifyArgs 2>&1 | Out-String).Trim()
     return @{
         Output = $output
         ExitCode = $LASTEXITCODE
@@ -46,12 +72,8 @@ Write-Host -Object 'Setting up...' -ForegroundColor 'Cyan'
 
 if (-not (Get-Command -Name 'spicetify' -ErrorAction 'SilentlyContinue')) {
     Write-Host -Object 'Spicetify not found.' -ForegroundColor 'Yellow'
-    Write-Host -Object 'Installing it for you...' -ForegroundColor 'Cyan'
-    $Parameters = @{
-        Uri             = 'https://raw.githubusercontent.com/manolopro3333/cli/test/install.ps1'
-        UseBasicParsing = $true
-    }
-    Invoke-WebRequest @Parameters | Invoke-Expression
+    Write-Host -Object 'Install the forked CLI first, then rerun Marketplace from a new terminal.' -ForegroundColor 'Red'
+    return
 }
 
 try {
