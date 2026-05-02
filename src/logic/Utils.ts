@@ -534,7 +534,7 @@ export const isGithubRawUrl = (url: string) => {
  */
 export const getParamsFromGithubRaw = (url: string) => {
   const regex_result = url.match(/https:\/\/raw\.githubusercontent\.com\/(?<user>[^/]+)\/(?<repo>[^/]+)\/(?<branch>[^/]+)\/(?<filePath>.+$)/);
-  // e.g. https://raw.githubusercontent.com/spicetify/spicetify-extensions/main/featureshuffle/featureshuffle.js
+  // e.g. https://raw.githubusercontent.com/<owner>/<repo>/<branch>/path/to/file.js
 
   const obj = {
     user: regex_result ? regex_result.groups?.user : null,

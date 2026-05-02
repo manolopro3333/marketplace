@@ -6,7 +6,7 @@ set -e
 
    
 # download uri
-releases_uri=https://github.com/spicetify/marketplace/releases
+releases_uri=https://github.com/manolopro3333/marketplace/releases
 if [ $# -gt 0 ]; then
 	tag=$1
 else

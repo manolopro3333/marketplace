@@ -52,7 +52,7 @@ function UpdateModal(): React.ReactElement {
       <hr />
       <div id="marketplace-update-guide">
         <h3 className="marketplace-update-header">{t("updateModal.howToUpgrade")}</h3>
-        <a href="https://github.com/spicetify/marketplace/wiki/Installation">{t("updateModal.viewGuide")}</a>
+        <a href="https://github.com/manolopro3333/marketplace/wiki/Installation">{t("updateModal.viewGuide")}</a>
       </div>
     </div>
   );

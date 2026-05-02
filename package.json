@@ -1,10 +1,10 @@
 {
   "name": "marketplace",
   "version": "1.0.8",
-  "homepage": "https://github.com/spicetify/marketplace",
-  "repository": "github:spicetify/marketplace",
+  "homepage": "https://github.com/manolopro3333/marketplace",
+  "repository": "github:manolopro3333/marketplace",
   "bugs": {
-    "url": "https://github.com/spicetify/marketplace/issues"
+    "url": "https://github.com/manolopro3333/marketplace/issues"
   },
   "packageManager": "pnpm@9.0.6",
   "scripts": {
