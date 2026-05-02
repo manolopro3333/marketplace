@@ -21,7 +21,7 @@ tag=${tag#v}
 echo "FETCHING Version $tag"
 
 download_uri=$releases_uri/download/v$tag/marketplace.zip
-    default_color_uri="https://raw.githubusercontent.com/spicetify/marketplace/main/resources/color.ini"
+    default_color_uri="https://raw.githubusercontent.com/manolopro3333/marketplace/main/resources/color.ini"
 
 SPICETIFY_CONFIG_DIR="$SPICETIFY_CONFIG"
 if [ -z "$SPICETIFY_CONFIG_DIR" ]; then

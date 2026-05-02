@@ -17,7 +17,7 @@
     "type-check": "tsc --noEmit",
     "watch": "spicetify-creator --watch",
     "prepare": "husky",
-    "update-types": "curl -s -o src/types/spicetify.d.ts https://raw.githubusercontent.com/spicetify/cli/main/globals.d.ts"
+    "update-types": "curl -s -o src/types/spicetify.d.ts https://raw.githubusercontent.com/manolopro3333/cli/main/globals.d.ts"
   },
   "engines": {
     "yarn": "please-use-pnpm",

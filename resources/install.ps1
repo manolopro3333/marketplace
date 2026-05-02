@@ -48,7 +48,7 @@ if (-not (Get-Command -Name 'spicetify' -ErrorAction 'SilentlyContinue')) {
     Write-Host -Object 'Spicetify not found.' -ForegroundColor 'Yellow'
     Write-Host -Object 'Installing it for you...' -ForegroundColor 'Cyan'
     $Parameters = @{
-        Uri             = 'https://raw.githubusercontent.com/spicetify/cli/main/install.ps1'
+        Uri             = 'https://raw.githubusercontent.com/manolopro3333/cli/main/install.ps1'
         UseBasicParsing = $true
     }
     Invoke-WebRequest @Parameters | Invoke-Expression
@@ -104,7 +104,7 @@ Write-Host -Object 'Downloading Marketplace...' -ForegroundColor 'Cyan'
 $marketArchivePath = "$marketAppPath\marketplace.zip"
 $unpackedFolderPath = "$marketAppPath\marketplace-dist"
 $Parameters = @{
-  Uri             = 'https://github.com/spicetify/marketplace/releases/latest/download/marketplace.zip'
+    Uri             = 'https://github.com/manolopro3333/marketplace/releases/latest/download/marketplace.zip'
   UseBasicParsing = $true
   OutFile         = $marketArchivePath
 }
@@ -120,7 +120,7 @@ Invoke-Spicetify "config" "inject_css" "1" "replace_colors" "1"
 
 Write-Host -Object 'Downloading placeholder theme...' -ForegroundColor 'Cyan'
 $Parameters = @{
-  Uri             = 'https://raw.githubusercontent.com/spicetify/marketplace/main/resources/color.ini'
+    Uri             = 'https://raw.githubusercontent.com/manolopro3333/marketplace/main/resources/color.ini'
   UseBasicParsing = $true
   OutFile         = "$marketThemePath\color.ini"
 }
