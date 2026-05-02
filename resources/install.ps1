@@ -48,7 +48,7 @@ if (-not (Get-Command -Name 'spicetify' -ErrorAction 'SilentlyContinue')) {
     Write-Host -Object 'Spicetify not found.' -ForegroundColor 'Yellow'
     Write-Host -Object 'Installing it for you...' -ForegroundColor 'Cyan'
     $Parameters = @{
-        Uri             = 'https://raw.githubusercontent.com/manolopro3333/cli/main/install.ps1'
+        Uri             = 'https://raw.githubusercontent.com/manolopro3333/cli/test/install.ps1'
         UseBasicParsing = $true
     }
     Invoke-WebRequest @Parameters | Invoke-Expression
