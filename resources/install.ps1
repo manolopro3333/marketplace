@@ -129,9 +129,14 @@ Write-Host -Object 'Spicetify found!' -ForegroundColor 'Green'
 
 Write-Host -Object 'Getting Spicetify paths...' -ForegroundColor 'Gray'
 try {
-    $spiceUserDataPath = Get-SpicetifyUserDataPath
-    if ([string]::IsNullOrWhiteSpace($spiceUserDataPath)) {
-        throw 'Unable to determine the Spicetify user data path.'
+    $result = Invoke-SpicetifyWithOutput "path" "userdata"
+    if ($result.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($result.Output)) {
+        $spiceUserDataPath = Get-SpicetifyUserDataPath
+        if ([string]::IsNullOrWhiteSpace($spiceUserDataPath)) {
+            throw 'Unable to determine the Spicetify user data path.'
+        }
+    } else {
+        $spiceUserDataPath = $result.Output.Trim()
     }
 
     Write-Host -Object "User data path: $spiceUserDataPath" -ForegroundColor 'Gray'
@@ -149,11 +154,25 @@ $marketAppPath = "$spiceUserDataPath\CustomApps\marketplace"
 $marketThemePath = "$spiceUserDataPath\Themes\marketplace"
 
 Write-Host -Object 'Checking theme installation...' -ForegroundColor 'Gray'
-$isThemeInstalled = Test-Path -Path (Join-Path -Path $spiceUserDataPath -ChildPath 'Themes') -PathType 'Container'
+try {
+    $themePathCheck = Invoke-SpicetifyWithOutput "path" "-s"
+    $isThemeInstalled = $themePathCheck.ExitCode -eq 0
+} catch {
+    $isThemeInstalled = Test-Path -Path (Join-Path -Path $spiceUserDataPath -ChildPath 'Themes') -PathType 'Container'
+}
 Write-Host -Object "Theme installed: $isThemeInstalled" -ForegroundColor 'Gray'
 
 Write-Host -Object 'Getting current theme...' -ForegroundColor 'Gray'
-$currentTheme = Get-SpicetifyCurrentTheme -ConfigPath $spicetifyConfigPath
+try {
+    $currentThemeResult = Invoke-SpicetifyWithOutput "config" "current_theme"
+    if ($currentThemeResult.ExitCode -eq 0) {
+        $currentTheme = $currentThemeResult.Output.Trim()
+    } else {
+        $currentTheme = Get-SpicetifyCurrentTheme -ConfigPath $spicetifyConfigPath
+    }
+} catch {
+    $currentTheme = Get-SpicetifyCurrentTheme -ConfigPath $spicetifyConfigPath
+}
 Write-Host -Object "Current theme: $currentTheme" -ForegroundColor 'Gray'
 $setTheme = $true
 
