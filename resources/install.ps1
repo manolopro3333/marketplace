@@ -65,26 +65,8 @@ function Invoke-SpicetifyWithOutput {
     $exitCode = 0
     
     try {
-        $job = Start-Job -ScriptBlock {
-            param($exe, $args)
-            & $exe @args 2>&1
-        } -ArgumentList $spicetifyExecutable, $spicetifyArgs
-        
-        $result = Wait-Job -Job $job -Timeout 30
-        if ($null -eq $result) {
-            Stop-Job -Job $job
-            $output = "Timeout: Command took longer than 30 seconds"
-            $exitCode = 1
-            # wa
-        } else {
-            $output = (Receive-Job -Job $job | Out-String).Trim()
-            if ($job.JobStateInfo.State -eq [System.Management.Automation.JobState]::Failed) {
-                $exitCode = 1
-            } else {
-                $exitCode = 0
-            }
-        }
-        Remove-Job -Job $job -Force
+        $output = (& $spicetifyExecutable @spicetifyArgs 2>&1 | Out-String).Trim()
+        $exitCode = $LASTEXITCODE
     } catch {
         $output = $_.Exception.Message
         $exitCode = 1
