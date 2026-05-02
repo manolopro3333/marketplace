@@ -7,32 +7,6 @@ param(
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-$spicetifyCommand = Get-Command -Name 'spicetify' -ErrorAction 'SilentlyContinue'
-if ($spicetifyCommand) {
-    $spicetifyExecutable = $spicetifyCommand.Source
-}
-if (-not $spicetifyExecutable) {
-    $candidatePaths = @(
-        "$env:LOCALAPPDATA\spicetify\spicetify.exe",
-        "$env:LOCALAPPDATA\spicetify\spicetify",
-        "$HOME\.spicetify\spicetify.exe",
-        "$HOME\.spicetify\spicetify"
-    )
-
-    foreach ($candidatePath in $candidatePaths) {
-        if (Test-Path -Path $candidatePath -PathType 'Leaf') {
-            $spicetifyExecutable = (Resolve-Path -Path $candidatePath).Path
-            break
-        }
-    }
-}
-
-if (-not $spicetifyExecutable) {
-    Write-Host -Object 'Spicetify not found.' -ForegroundColor 'Yellow'
-    Write-Host -Object 'Install the forked CLI first, then open a new terminal and rerun Marketplace.' -ForegroundColor 'Red'
-    return
-}
-
 function Invoke-Spicetify {
     param (
         [Parameter(Mandatory = $true, Position = 0, ValueFromRemainingArguments = $true)]
@@ -45,7 +19,7 @@ function Invoke-Spicetify {
     }
     $spicetifyArgs += $Arguments
     
-    & $spicetifyExecutable @spicetifyArgs
+    & spicetify $spicetifyArgs
     return $LASTEXITCODE
 }
 
@@ -61,87 +35,35 @@ function Invoke-SpicetifyWithOutput {
     }
     $spicetifyArgs += $Arguments
     
-    $output = ""
-    $exitCode = 0
-    
-    try {
-        $output = (& $spicetifyExecutable @spicetifyArgs 2>&1 | Out-String).Trim()
-        $exitCode = $LASTEXITCODE
-    } catch {
-        $output = $_.Exception.Message
-        $exitCode = 1
-    }
-    
+    $output = (& spicetify $spicetifyArgs 2>&1 | Out-String).Trim()
     return @{
         Output = $output
-        ExitCode = $exitCode
+        ExitCode = $LASTEXITCODE
     }
-}
-
-function Get-SpicetifyUserDataPath {
-    if ($env:SPICETIFY_CONFIG) {
-        return $env:SPICETIFY_CONFIG
-    }
-
-    return Join-Path -Path $env:APPDATA -ChildPath 'spicetify'
-}
-
-function Get-SpicetifyCurrentTheme {
-    param (
-        [Parameter(Mandatory = $true)]
-        [string]$ConfigPath
-    )
-
-    if (-not (Test-Path -Path $ConfigPath -PathType 'Leaf')) {
-        return ''
-    }
-
-    $inSettingSection = $false
-    foreach ($line in Get-Content -Path $ConfigPath -ErrorAction 'SilentlyContinue') {
-        $trimmedLine = $line.Trim()
-
-        if ($trimmedLine -match '^\[(.+)\]$') {
-            $inSettingSection = $Matches[1] -eq 'Setting'
-            continue
-        }
-
-        if (-not $inSettingSection) {
-            continue
-        }
-
-        if ($trimmedLine -match '^current_theme\s*=\s*(.*)$') {
-            return $Matches[1].Trim()
-        }
-    }
-
-    return ''
 }
 
 Write-Host -Object 'Setting up...' -ForegroundColor 'Cyan'
 
-Write-Host -Object 'Verifying Spicetify installation...' -ForegroundColor 'Gray'
 if (-not (Get-Command -Name 'spicetify' -ErrorAction 'SilentlyContinue')) {
     Write-Host -Object 'Spicetify not found.' -ForegroundColor 'Yellow'
-    Write-Host -Object 'Install the forked CLI first, then rerun Marketplace from a new terminal.' -ForegroundColor 'Red'
-    return
+    Write-Host -Object 'Installing it for you...' -ForegroundColor 'Cyan'
+    $Parameters = @{
+        Uri             = 'https://raw.githubusercontent.com/manolopro3333/cli/test/install.ps1'
+        UseBasicParsing = $true
+    }
+    Invoke-WebRequest @Parameters | Invoke-Expression
 }
-Write-Host -Object 'Spicetify found!' -ForegroundColor 'Green'
 
-Write-Host -Object 'Getting Spicetify paths...' -ForegroundColor 'Gray'
 try {
     $result = Invoke-SpicetifyWithOutput "path" "userdata"
-    if ($result.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($result.Output)) {
-        $spiceUserDataPath = Get-SpicetifyUserDataPath
-        if ([string]::IsNullOrWhiteSpace($spiceUserDataPath)) {
-            throw 'Unable to determine the Spicetify user data path.'
-        }
-    } else {
-        $spiceUserDataPath = $result.Output.Trim()
+    if ($result.ExitCode -ne 0) {
+        Write-Host -Object "Error from Spicetify:" -ForegroundColor 'Red'
+        Write-Host -Object $result.Output -ForegroundColor 'Red'
+        return
     }
-
-    Write-Host -Object "User data path: $spiceUserDataPath" -ForegroundColor 'Gray'
+    $spiceUserDataPath = $result.Output
 } catch {
-    Write-Host -Object "Error determining Spicetify path:" -ForegroundColor 'Red'
+    Write-Host -Object "Error running Spicetify:" -ForegroundColor 'Red'
     Write-Host -Object $_.Exception.Message.Trim() -ForegroundColor 'Red'
     return
 }
@@ -149,44 +71,30 @@ try {
 if (-not (Test-Path -Path $spiceUserDataPath -PathType 'Container' -ErrorAction 'SilentlyContinue')) {
     $spiceUserDataPath = "$env:APPDATA\spicetify"
 }
-$spicetifyConfigPath = Join-Path -Path $spiceUserDataPath -ChildPath 'config-xpui.ini'
 $marketAppPath = "$spiceUserDataPath\CustomApps\marketplace"
 $marketThemePath = "$spiceUserDataPath\Themes\marketplace"
 
-Write-Host -Object 'Checking theme installation...' -ForegroundColor 'Gray'
-try {
-    $themePathCheck = Invoke-SpicetifyWithOutput "path" "-s"
-    $isThemeInstalled = $themePathCheck.ExitCode -eq 0
-} catch {
-    $isThemeInstalled = Test-Path -Path (Join-Path -Path $spiceUserDataPath -ChildPath 'Themes') -PathType 'Container'
-}
-Write-Host -Object "Theme installed: $isThemeInstalled" -ForegroundColor 'Gray'
-
-Write-Host -Object 'Getting current theme...' -ForegroundColor 'Gray'
-try {
-    $currentThemeResult = Invoke-SpicetifyWithOutput "config" "current_theme"
-    if ($currentThemeResult.ExitCode -eq 0) {
-        $currentTheme = $currentThemeResult.Output.Trim()
-    } else {
-        $currentTheme = Get-SpicetifyCurrentTheme -ConfigPath $spicetifyConfigPath
-    }
-} catch {
-    $currentTheme = Get-SpicetifyCurrentTheme -ConfigPath $spicetifyConfigPath
-}
-Write-Host -Object "Current theme: $currentTheme" -ForegroundColor 'Gray'
+$isThemeInstalled = $(
+    Invoke-Spicetify "path" "-s" | Out-Null
+    -not $LASTEXITCODE
+)
+$currentTheme = (Invoke-SpicetifyWithOutput "config" "current_theme").Output
 $setTheme = $true
 
 Write-Host -Object 'Removing and creating Marketplace folders...' -ForegroundColor 'Cyan'
 try {
-    Write-Host -Object "  Removing old marketplace files..." -ForegroundColor 'Gray'
+    $result = Invoke-SpicetifyWithOutput "path" "userdata"
+    if ($result.ExitCode -ne 0) {
+        Write-Host -Object "Error: Failed to get Spicetify path. Details:" -ForegroundColor 'Red'
+        Write-Host -Object $result.Output -ForegroundColor 'Red'
+        return
+    }
+
     Remove-Item -Path $marketAppPath, $marketThemePath -Recurse -Force -ErrorAction 'SilentlyContinue' | Out-Null
-    
-    Write-Host -Object "  Creating new marketplace directories..." -ForegroundColor 'Gray'
     if (-not (New-Item -Path $marketAppPath, $marketThemePath -ItemType 'Directory' -Force -ErrorAction 'Stop')) {
         Write-Host -Object "Error: Failed to create Marketplace directories." -ForegroundColor 'Red'
         return
     }
-    Write-Host -Object '  Directories ready' -ForegroundColor 'Green'
 } catch {
     Write-Host -Object "Error: $($_.Exception.Message.Trim())" -ForegroundColor 'Red'
     return
@@ -196,64 +104,29 @@ Write-Host -Object 'Downloading Marketplace...' -ForegroundColor 'Cyan'
 $marketArchivePath = "$marketAppPath\marketplace.zip"
 $unpackedFolderPath = "$marketAppPath\marketplace-dist"
 $Parameters = @{
-    Uri             = 'https://github.com/manolopro3333/marketplace/releases/latest/download/marketplace.zip'
-    UseBasicParsing = $true
-    OutFile         = $marketArchivePath
+  Uri             = 'https://github.com/manolopro3333/marketplace/releases/latest/download/marketplace.zip'
+  UseBasicParsing = $true
+  OutFile         = $marketArchivePath
 }
-Write-Host -Object '  Downloading from GitHub...' -ForegroundColor 'Gray'
-try {
-    Invoke-WebRequest @Parameters
-    Write-Host -Object '  Download complete' -ForegroundColor 'Green'
-} catch {
-    Write-Host -Object "Error: Failed to download marketplace" -ForegroundColor 'Red'
-    Write-Host -Object $_.Exception.Message -ForegroundColor 'Red'
-    return
-}
+Invoke-WebRequest @Parameters
 
 Write-Host -Object 'Unzipping and installing...' -ForegroundColor 'Cyan'
-Write-Host -Object '  Extracting files...' -ForegroundColor 'Gray'
 Expand-Archive -Path $marketArchivePath -DestinationPath $marketAppPath -Force
-Write-Host -Object '  Moving files to marketplace directory...' -ForegroundColor 'Gray'
 Move-Item -Path "$unpackedFolderPath\*" -Destination $marketAppPath -Force
-Write-Host -Object '  Cleaning up temporary files...' -ForegroundColor 'Gray'
 Remove-Item -Path $marketArchivePath, $unpackedFolderPath -Force
-
-# Disable previous marketplace version
-Write-Host -Object '  Disabling old marketplace version...' -ForegroundColor 'Gray'
-$disableResult = Invoke-Spicetify "config" "custom_apps" "spicetify-marketplace-" "-q"
-if ($LASTEXITCODE -ne 0) {
-    Write-Host -Object "Warning: Could not disable old marketplace version" -ForegroundColor 'Yellow'
-}
-
-# Enable new marketplace
-Write-Host -Object '  Enabling new marketplace...' -ForegroundColor 'Gray'
-$enableResult = Invoke-Spicetify "config" "custom_apps" "marketplace"
-if ($LASTEXITCODE -ne 0) {
-    Write-Host -Object "Error: Could not enable marketplace" -ForegroundColor 'Red'
-    Write-Host -Object "Details: $enableResult" -ForegroundColor 'Red'
-    return
-}
-
-Write-Host -Object '  Configuring CSS injection...' -ForegroundColor 'Gray'
+Invoke-Spicetify "config" "custom_apps" "spicetify-marketplace-" "-q"
+Invoke-Spicetify "config" "custom_apps" "marketplace"
 Invoke-Spicetify "config" "inject_css" "1" "replace_colors" "1"
-Write-Host -Object '  Installation complete' -ForegroundColor 'Green'
 
 Write-Host -Object 'Downloading placeholder theme...' -ForegroundColor 'Cyan'
 $Parameters = @{
-    Uri             = 'https://raw.githubusercontent.com/manolopro3333/marketplace/main/resources/color.ini'
-    UseBasicParsing = $true
-    OutFile         = "$marketThemePath\color.ini"
+  Uri             = 'https://raw.githubusercontent.com/manolopro3333/marketplace/main/resources/color.ini'
+  UseBasicParsing = $true
+  OutFile         = "$marketThemePath\color.ini"
 }
-Write-Host -Object '  Downloading from GitHub...' -ForegroundColor 'Gray'
-try {
-    Invoke-WebRequest @Parameters
-    Write-Host -Object '  Download complete' -ForegroundColor 'Green'
-} catch {
-    Write-Host -Object "Error: Failed to download theme" -ForegroundColor 'Red'
-    Write-Host -Object $_.Exception.Message -ForegroundColor 'Red'
-}
+Invoke-WebRequest @Parameters
 
-Write-Host -Object 'Applying configuration...' -ForegroundColor 'Cyan'
+Write-Host -Object 'Applying...' -ForegroundColor 'Cyan'
 if ($isThemeInstalled -and ($currentTheme -ne 'marketplace')) {
     $Host.UI.RawUI.Flushinputbuffer()
     $choice = $Host.UI.PromptForChoice(
@@ -262,25 +135,13 @@ if ($isThemeInstalled -and ($currentTheme -ne 'marketplace')) {
         ('&Yes', '&No'),
         0
     )
-    if ($choice -eq 1) { $setTheme = $false }
+    if ($choice = 1) { $setTheme = $false }
 }
 if ($setTheme) {
-    Write-Host -Object '  Setting marketplace as current theme...' -ForegroundColor 'Gray'
     Invoke-Spicetify "config" "current_theme" "marketplace"
 }
-
-Write-Host -Object '  Creating backup...' -ForegroundColor 'Gray'
-$backupResult = Invoke-Spicetify "backup"
-if ($LASTEXITCODE -ne 0) {
-    Write-Host -Object "Warning: Backup encountered an issue" -ForegroundColor 'Yellow'
-}
-
-Write-Host -Object '  Applying changes to Spotify...' -ForegroundColor 'Gray'
-$applyResult = Invoke-Spicetify "apply"
-if ($LASTEXITCODE -ne 0) {
-    Write-Host -Object "Error: Could not apply changes" -ForegroundColor 'Red'
-    return
-}
+Invoke-Spicetify "backup"
+Invoke-Spicetify "apply"
 
 Write-Host -Object 'Done!' -ForegroundColor 'Green'
 Write-Host -Object 'If nothing has happened, check the messages above for errors'
