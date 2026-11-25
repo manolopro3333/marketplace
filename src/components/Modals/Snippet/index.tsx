@@ -6,6 +6,7 @@ import "prismjs/components/prism-css";
 
 import { LOCALSTORAGE_KEYS } from "../../../constants";
 import type { ModalType } from "../../../logic/LaunchModals";
+import { marketplaceStorage } from "../../../logic/Storage";
 import { fileToBase64, getLocalStorageDataFromKey, initializeSnippets } from "../../../logic/Utils";
 import Button from "../../Button";
 import type { CardProps } from "../../Card/Card";
@@ -23,7 +24,7 @@ const SnippetModal = (props: { content?: CardProps; type: ModalType; callback?: 
   const localStorageKey = `marketplace:installed:snippet:${processName()}`;
   const [isInstalled, setInstalled] = React.useState(!!getLocalStorageDataFromKey(localStorageKey));
 
-  const saveSnippet = () => {
+  const saveSnippet = async () => {
     // const processedCode = processCode();
     const processedName = processName();
     const processedDescription = description.trim();
@@ -38,15 +39,15 @@ const SnippetModal = (props: { content?: CardProps; type: ModalType; callback?: 
       // Remove from installed list
       console.debug(`Deleting outdated snippet: ${props.content.item.title}`);
 
-      localStorage.removeItem(`marketplace:installed:snippet:${props.content.item.title}`);
+      await marketplaceStorage.removeItemAsync(`marketplace:installed:snippet:${props.content.item.title}`);
       const installedSnippetKeys = getLocalStorageDataFromKey(LOCALSTORAGE_KEYS.installedSnippets, []);
       const remainingInstalledSnippetKeys = installedSnippetKeys.filter(
         (key: string) => key !== `marketplace:installed:snippet:${props.content?.item.title}`
       );
-      localStorage.setItem(LOCALSTORAGE_KEYS.installedSnippets, JSON.stringify(remainingInstalledSnippetKeys));
+      await marketplaceStorage.setItemAsync(LOCALSTORAGE_KEYS.installedSnippets, JSON.stringify(remainingInstalledSnippetKeys));
     }
 
-    localStorage.setItem(
+    await marketplaceStorage.setItemAsync(
       localStorageKey,
       JSON.stringify({
         title: processedName,
@@ -61,7 +62,7 @@ const SnippetModal = (props: { content?: CardProps; type: ModalType; callback?: 
     const installedSnippetKeys = getLocalStorageDataFromKey(LOCALSTORAGE_KEYS.installedSnippets, []);
     if (installedSnippetKeys.indexOf(localStorageKey) === -1) {
       installedSnippetKeys.push(localStorageKey);
-      localStorage.setItem(LOCALSTORAGE_KEYS.installedSnippets, JSON.stringify(installedSnippetKeys));
+      await marketplaceStorage.setItemAsync(LOCALSTORAGE_KEYS.installedSnippets, JSON.stringify(installedSnippetKeys));
     }
     const installedSnippets = installedSnippetKeys.map((key: string) => getLocalStorageDataFromKey(key));
     initializeSnippets(installedSnippets);
@@ -70,9 +71,9 @@ const SnippetModal = (props: { content?: CardProps; type: ModalType; callback?: 
     if (props.type === "EDIT_SNIPPET") location.reload();
   };
 
-  let inputElement: HTMLInputElement;
+  const inputElement = React.useRef<HTMLInputElement>(null);
   const FileInputClick = () => {
-    inputElement.click();
+    inputElement.current?.click();
   };
 
   return (
@@ -140,8 +141,7 @@ const SnippetModal = (props: { content?: CardProps; type: ModalType; callback?: 
               id={PREVIEW_IMAGE_ID}
               type="file"
               style={{ display: "none" }}
-              // biome-ignore lint/suspicious/noAssignInExpressions: TODO: fix this
-              ref={(input: HTMLInputElement) => (inputElement = input)}
+              ref={inputElement}
               onChange={async (event) => {
                 if (event.target.files?.[0]) {
                   try {

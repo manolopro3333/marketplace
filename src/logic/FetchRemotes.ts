@@ -1,12 +1,54 @@
 import { t } from "i18next";
 
 import { BLACKLIST_URL, ITEMS_PER_REQUEST, SNIPPETS_URL } from "../constants";
-import type { CardItem, RepoTopic, Snippet } from "../types/marketplace-types";
-import { addToSessionStorage, isBlacklisted, processAuthors } from "./Utils";
+import type { CardItem, RepoSearchItem, RepoSearchPage, RepoTopic, Snippet } from "../types/marketplace-types";
+import { manifestSchema } from "./Schemas";
+import { marketplaceStorage } from "./Storage";
+import { addToSessionStorage, cacheInSessionStorage, isBlacklisted, processAuthors } from "./Utils";
 
-// TODO: add sort type, order, etc?
 // https://docs.github.com/en/github/searching-for-information-on-github/searching-on-github/searching-for-repositories#search-by-topic
 // https://docs.github.com/en/rest/reference/search#search-repositories
+
+/**
+ * Map a Marketplace sort mode onto the closest GitHub search sort.
+ *
+ * Without an explicit `sort`, GitHub falls back to "best match", which ranks
+ * heavily on popularity. New or low-star repos land on the last page, so the
+ * recency sorts can never surface them. GitHub has no "created" sort, so the
+ * created-date modes use `updated` to at least fetch recently-touched repos.
+ */
+function githubSortParams(sortMode: string) {
+  switch (sortMode) {
+    case "newest":
+    case "lastUpdated":
+      return "&sort=updated&order=desc";
+    case "oldest":
+    case "mostStale":
+      return "&sort=updated&order=asc";
+    default:
+      return "&sort=stars&order=desc";
+  }
+}
+
+/**
+ * Keep only the fields Marketplace uses (plus a few for debugging) from a search result.
+ * The full object has ~80 fields and makes each cached page about 1MB, which
+ * fills the sessionStorage quota after a handful of pages.
+ */
+function trimRepoSearchItem(repo: RepoSearchItem): RepoSearchItem {
+  return {
+    full_name: repo.full_name,
+    description: repo.description,
+    html_url: repo.html_url,
+    contents_url: repo.contents_url,
+    default_branch: repo.default_branch,
+    stargazers_count: repo.stargazers_count,
+    archived: repo.archived,
+    created_at: repo.created_at,
+    pushed_at: repo.pushed_at,
+    updated_at: repo.updated_at
+  };
+}
 
 /**
  * Query GitHub for all repos with the requested topic
@@ -14,28 +56,29 @@ import { addToSessionStorage, isBlacklisted, processAuthors } from "./Utils";
  * @param page The query page number
  * @returns Array of search results (filtered through the blacklist)
  */
-export async function getTaggedRepos(tag: RepoTopic, page = 1, BLACKLIST: string[] = [], showArchived = false) {
+export async function getTaggedRepos(tag: RepoTopic, page = 1, BLACKLIST: string[] = [], showArchived = false, sortMode = "stars") {
   // www is needed or it will block with "cross-origin" error.
-  let url = `https://api.github.com/search/repositories?q=${encodeURIComponent(`topic:${tag}`)}&per_page=${ITEMS_PER_REQUEST}`;
+  let url = `https://api.github.com/search/repositories?q=${encodeURIComponent(`topic:${tag}`)}&per_page=${ITEMS_PER_REQUEST}${githubSortParams(sortMode)}`;
 
-  // We can test multiple pages with this URL (58 results), as well as broken iamges etc.
+  // We can test multiple pages with this URL (58 results), as well as broken images etc.
   // let url = `https://api.github.com/search/repositories?q=${encodeURIComponent("topic:spicetify")}`;
   if (page) url += `&page=${page}`;
-  // Sorting params (not implemented for Marketplace yet)
-  // if (sortConfig.by.match(/top|controversial/) && sortConfig.time) {
-  //     url += `&t=${sortConfig.time}`
-  const allRepos =
-    JSON.parse(window.sessionStorage.getItem(`${tag}-page-${page}`) || "null") ||
+
+  // Cache by the exact request, so sort modes that send the same GitHub query
+  // (e.g. Newest and Last Updated) share results instead of fetching them twice.
+  const allRepos: RepoSearchPage | null =
+    JSON.parse(window.sessionStorage.getItem(url) || "null") ||
     (await fetch(url)
       .then((res) => res.json())
+      .then((res) => (res?.items ? { total_count: res.total_count, items: res.items.map(trimRepoSearchItem) } : null))
       .catch(() => null));
 
   if (!allRepos?.items) {
     Spicetify.showNotification(t("notifications.tooManyRequests"), true, 5000);
-    return { items: [] };
+    return { total_count: 0, page_count: 0, items: [] };
   }
 
-  window.sessionStorage.setItem(`${tag}-page-${page}`, JSON.stringify(allRepos));
+  cacheInSessionStorage(url, JSON.stringify(allRepos));
 
   const filteredResults = {
     ...allRepos,
@@ -46,6 +89,20 @@ export async function getTaggedRepos(tag: RepoTopic, page = 1, BLACKLIST: string
   };
 
   return filteredResults;
+}
+
+/**
+ * Work out which page of search results to request next.
+ * Page 0 omits the `page` param, so GitHub returns page 1, and the next page is 2.
+ * @param page The page just requested
+ * @param pageOfRepos That page's results from getTaggedRepos
+ * @returns The next page number, or null once every result has been loaded
+ */
+export function getNextPage(page: number, pageOfRepos: { page_count: number; total_count: number }) {
+  const currentPage = page > 0 ? page : 1;
+  // Count the unfiltered items, since the blacklist filter shrinks `items`
+  const soFarResults = ITEMS_PER_REQUEST * (currentPage - 1) + pageOfRepos.page_count;
+  return soFarResults < pageOfRepos.total_count ? currentPage + 1 : null;
 }
 
 // Workaround for not spamming console with 404s
@@ -74,8 +131,8 @@ async function fetchRepoManifest(url: string) {
   });
 }
 
-// TODO: add try/catch here?
-// TODO: can we add a return type here?
+const pendingManifests = new Map<string, ReturnType<typeof loadRepoManifest>>();
+
 /**
  * Get the manifest object for a repo
  * @param user Owner username
@@ -83,23 +140,54 @@ async function fetchRepoManifest(url: string) {
  * @param branch Default branch name (e.g. main or master)
  * @returns The manifest object
  */
-async function getRepoManifest(user: string, repo: string, branch: string) {
+function getRepoManifest(user: string, repo: string, branch: string) {
+  const url = `https://raw.githubusercontent.com/${user}/${repo}/${branch}/manifest.json`;
+  const pending = pendingManifests.get(url);
+  if (pending) return pending;
+
+  const request = loadRepoManifest(user, repo, url).finally(() => pendingManifests.delete(url));
+  pendingManifests.set(url, request);
+  return request;
+}
+
+// TODO: add try/catch here?
+async function loadRepoManifest(user: string, repo: string, url: string) {
   const key = `${user}-${repo}`;
   const sessionStorageItem = window.sessionStorage.getItem(key);
   const failedSessionStorageItems = JSON.parse(window.sessionStorage.getItem("noManifests") || "[]");
-  if (sessionStorageItem) return JSON.parse(sessionStorageItem);
+  if (!sessionStorageItem && failedSessionStorageItems.includes(url)) return [];
 
-  const url = `https://raw.githubusercontent.com/${user}/${repo}/${branch}/manifest.json`;
-  if (failedSessionStorageItems.includes(url)) return null;
+  let manifests: ReturnType<typeof JSON.parse>;
+  let loadedFromCache = false;
 
-  let manifest = await fetchRepoManifest(url);
+  if (sessionStorageItem) {
+    try {
+      manifests = JSON.parse(sessionStorageItem);
+      loadedFromCache = true;
+    } catch (error) {
+      console.warn(`Invalid cached Marketplace manifest from ${user}/${repo}`, error);
+      window.sessionStorage.removeItem(key);
+      manifests = await fetchRepoManifest(url);
+    }
+  } else {
+    manifests = await fetchRepoManifest(url);
+  }
 
-  if (!manifest) return addToSessionStorage([url], "noManifests");
-  if (!Array.isArray(manifest)) manifest = [manifest];
+  if (!manifests) {
+    addToSessionStorage([url], "noManifests");
+    return [];
+  }
+  if (!Array.isArray(manifests)) manifests = [manifests];
 
-  addToSessionStorage(manifest, key);
+  const parsedManifests = manifests.flatMap((manifest) => {
+    const parsed = manifestSchema.safeParse(manifest);
+    if (parsed.success) return [parsed.data];
+    console.warn(`Invalid Marketplace manifest from ${user}/${repo}`, parsed.error);
+    return [];
+  });
 
-  return manifest;
+  if (!loadedFromCache) cacheInSessionStorage(key, JSON.stringify(parsedManifests));
+  return parsedManifests;
 }
 
 // TODO: can we add a return type here?
@@ -116,7 +204,7 @@ export async function fetchExtensionManifest(contents_url: string, branch: strin
     // TODO: use the original search full_name ("theRealPadster/spicetify-hide-podcasts") or something to get the url better?
     const regex_result = contents_url.match(/https:\/\/api\.github\.com\/repos\/(?<user>.+)\/(?<repo>.+)\/contents/);
     // TODO: err handling?
-    if (!regex_result || !regex_result.groups) return null;
+    if (!regex_result?.groups) return null;
     const { user, repo } = regex_result.groups;
 
     const manifests = await getRepoManifest(user, repo, branch);
@@ -148,7 +236,7 @@ export async function fetchExtensionManifest(contents_url: string, branch: strin
           tags: manifest.tags
         };
         // Add to list unless we're hiding installed items and it's installed
-        if (!(hideInstalled && localStorage.getItem(`marketplace:installed:${user}/${repo}/${manifest.main}`))) {
+        if (!(hideInstalled && marketplaceStorage.getItem(`marketplace:installed:${user}/${repo}/${manifest.main}`))) {
           accum.push(item);
         }
       }
@@ -178,7 +266,7 @@ export async function fetchThemeManifest(contents_url: string, branch: string, s
   try {
     const regex_result = contents_url.match(/https:\/\/api\.github\.com\/repos\/(?<user>.+)\/(?<repo>.+)\/contents/);
     // TODO: err handling?
-    if (!regex_result || !regex_result.groups) return null;
+    if (!regex_result?.groups) return null;
     const { user, repo } = regex_result.groups;
 
     const manifests = await getRepoManifest(user, repo, branch);
@@ -242,7 +330,7 @@ export async function fetchAppManifest(contents_url: string, branch: string, sta
     // TODO: use the original search full_name ("theRealPadster/spicetify-hide-podcasts") or something to get the url better?
     const regex_result = contents_url.match(/https:\/\/api\.github\.com\/repos\/(?<user>.+)\/(?<repo>.+)\/contents/);
     // TODO: err handling?
-    if (!regex_result || !regex_result.groups) return null;
+    if (!regex_result?.groups) return null;
     const { user, repo } = regex_result.groups;
 
     const manifests = await getRepoManifest(user, repo, branch);
@@ -326,7 +414,7 @@ export const fetchCssSnippets = async (hideInstalled = false) => {
     }
 
     // Hide installed snippets if option is set and it's installed
-    if (!(hideInstalled && localStorage.getItem(`marketplace:installed:snippet:${snip.title.replaceAll(" ", "-")}`))) {
+    if (!(hideInstalled && marketplaceStorage.getItem(`marketplace:installed:snippet:${snip.title.replaceAll(" ", "-")}`))) {
       accum.push(snip);
     }
 

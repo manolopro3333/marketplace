@@ -5,13 +5,31 @@ import semver from "semver";
 
 const Spicetify = window.Spicetify;
 
-import { ITEMS_PER_REQUEST, LATEST_RELEASE_URL, LOCALSTORAGE_KEYS, MARKETPLACE_VERSION } from "../constants";
-import { fetchAppManifest, fetchCssSnippets, fetchExtensionManifest, fetchThemeManifest, getBlacklist, getTaggedRepos } from "../logic/FetchRemotes";
+import { ITEMS_PER_REQUEST, LATEST_RELEASE_URL, LOCALSTORAGE_KEYS, MANIFEST_FETCH_CONCURRENCY, MARKETPLACE_VERSION } from "../constants";
+import {
+  fetchAppManifest,
+  fetchCssSnippets,
+  fetchExtensionManifest,
+  fetchThemeManifest,
+  getBlacklist,
+  getNextPage,
+  getTaggedRepos
+} from "../logic/FetchRemotes";
 import { openModal } from "../logic/LaunchModals";
-import { generateSchemesOptions, generateSortOptions, getLocalStorageDataFromKey, injectColourScheme, sortCardItems } from "../logic/Utils";
-import type { CardItem, CardType, Config, SchemeIni, Snippet, TabItemConfig } from "../types/marketplace-types";
+import { storedCardItemSchema } from "../logic/Schemas";
+import { marketplaceStorage } from "../logic/Storage";
+import {
+  generateSchemesOptions,
+  generateSortOptions,
+  getLocalStorageDataFromKey,
+  injectColourScheme,
+  mapWithConcurrency,
+  sortCardElements,
+  sortCardItems
+} from "../logic/Utils";
+import type { CardItem, CardType, Config, RepoSearchItem, SchemeIni, Snippet, TabItemConfig } from "../types/marketplace-types";
 import Button from "./Button";
-import Card, { type Card as CardClass } from "./Card/Card";
+import Card, { type CardProps } from "./Card/Card";
 import DownloadIcon from "./Icons/DownloadIcon";
 import LoadingIcon from "./Icons/LoadingIcon";
 import LoadMoreIcon from "./Icons/LoadMoreIcon";
@@ -20,6 +38,8 @@ import ThemeDeveloperToolsIcon from "./Icons/ThemeDeveloperToolsIcon";
 import SortBox from "./Sortbox";
 import { TopBarContent } from "./TabBar";
 import Tooltip from "./Tooltip";
+
+type CardElement = React.ReactElement<CardProps>;
 
 class Grid extends React.Component<
   {
@@ -33,7 +53,7 @@ class Grid extends React.Component<
     version: string;
     newUpdate: boolean;
     searchValue: string;
-    cards: CardClass[];
+    cards: CardElement[];
     tabs: TabItemConfig[];
     rest: boolean;
     endOfList: boolean;
@@ -46,11 +66,6 @@ class Grid extends React.Component<
     super(props);
     Object.assign(this, props);
     this.updateAppConfig = props.updateAppConfig.bind(this);
-
-    // Fetches the sorting options, fetched from SortBox.js
-    this.sortConfig = {
-      by: getLocalStorageDataFromKey(LOCALSTORAGE_KEYS.sort, "top")
-    };
 
     this.state = {
       version: MARKETPLACE_VERSION,
@@ -69,10 +84,11 @@ class Grid extends React.Component<
   searchRequested: boolean;
   endOfList = false;
   lastScroll = 0;
-  requestQueue: never[][] = [];
+  // Identifies the current load. Each new request (tab switch, sort change) bumps it,
+  // so a load that resolves after being replaced can tell, and stop.
+  requestId = 0;
   requestPage = 0;
-  cardList: CardClass[] = [];
-  sortConfig: { by: string };
+  cardList: CardElement[] = [];
   // TODO: why are these set up funny
   // To get to the other side
   gridUpdateTabs: (() => void) | null;
@@ -85,10 +101,10 @@ class Grid extends React.Component<
 
   // TODO: should I put this in Grid state?
   getInstalledTheme() {
-    const installedThemeKey = localStorage.getItem(LOCALSTORAGE_KEYS.themeInstalled);
+    const installedThemeKey = marketplaceStorage.getItem(LOCALSTORAGE_KEYS.themeInstalled);
     if (!installedThemeKey) return null;
 
-    const installedThemeDataStr = localStorage.getItem(installedThemeKey);
+    const installedThemeDataStr = marketplaceStorage.getItem(installedThemeKey);
     if (!installedThemeDataStr) return null;
 
     const installedTheme = JSON.parse(installedThemeDataStr);
@@ -97,9 +113,17 @@ class Grid extends React.Component<
 
   newRequest(amount: number | undefined) {
     this.cardList = [];
-    const queue = [];
-    this.requestQueue.unshift(queue);
-    this.loadAmount(queue, amount);
+    this.requestId += 1;
+    this.loadAmount(this.requestId, amount);
+  }
+
+  /**
+   * Has a newer request (tab switch, sort change) replaced the one with this ID?
+   * Loads check this after every await and return -1 if so, so a replaced load
+   * never touches cardList, requestPage or endOfList.
+   */
+  isStaleRequest(requestId: number) {
+    return requestId !== this.requestId;
   }
 
   /**
@@ -125,14 +149,13 @@ class Grid extends React.Component<
       />
     );
 
-    this.cardList.push(card as unknown as CardClass);
+    this.cardList.push(card);
   }
 
-  // TODO: this isn't currently used, but it will be used for sorting (based on the SortBox component)
   updateSort(sortByValue) {
     if (sortByValue) {
-      this.sortConfig.by = sortByValue;
-      localStorage.setItem(LOCALSTORAGE_KEYS.sort, sortByValue);
+      this.CONFIG.sort = sortByValue;
+      marketplaceStorage.setItem(LOCALSTORAGE_KEYS.sort, sortByValue);
     }
 
     // this.requestPage = null;
@@ -157,13 +180,13 @@ class Grid extends React.Component<
   updatePostsVisual() {
     this.cardList = this.cardList.map((card, index) => {
       return <Card {...card.props} key={index.toString()} CONFIG={this.CONFIG} />;
-    }) as unknown as CardClass[];
+    });
     this.setState({ cards: [...this.cardList] });
   }
 
   switchTo(option: Option) {
     this.CONFIG.activeTab = option.value;
-    localStorage.setItem(LOCALSTORAGE_KEYS.activeTab, option.value);
+    marketplaceStorage.setItem(LOCALSTORAGE_KEYS.activeTab, option.value);
     this.cardList = [];
     // this.requestPage = null;
     this.requestPage = 0;
@@ -177,58 +200,53 @@ class Grid extends React.Component<
     this.newRequest(ITEMS_PER_REQUEST);
   }
 
+  async fetchRepoCards(requestId: number, repos: RepoSearchItem[], fetchManifest: (repo: RepoSearchItem) => Promise<CardItem[] | null>) {
+    const results = await mapWithConcurrency(repos, MANIFEST_FETCH_CONCURRENCY, fetchManifest, () => this.isStaleRequest(requestId));
+    return results.flatMap((items, index) => {
+      const repo = repos[index];
+      return (items ?? []).map((item) => ({
+        ...item,
+        archived: repo.archived,
+        lastUpdated: repo.pushed_at,
+        created: repo.created_at
+      }));
+    });
+  }
+
   // This is called from loadAmount in a loop until it has the requested amount of cards or runs out of results
   // Returns the next page number to fetch, or null if at end
   // TODO: maybe we should rename `loadPage()`, since it's slightly confusing when we have github pages as well
-  async loadPage(queue: never[]) {
+  async loadPage(requestId: number) {
     // Store value for comparison later
     const activeTab = this.CONFIG.activeTab;
     switch (activeTab) {
       case "Extensions": {
-        const pageOfRepos = await getTaggedRepos("spicetify-extensions", this.requestPage, this.BLACKLIST, this.CONFIG.visual.showArchived);
-        const extensions: CardItem[] = [];
-        for (const repo of pageOfRepos.items) {
-          const repoExtensions = await fetchExtensionManifest(
-            repo.contents_url,
-            repo.default_branch,
-            repo.stargazers_count,
-            this.CONFIG.visual.hideInstalled
-          );
+        const pageOfRepos = await getTaggedRepos(
+          "spicetify-extensions",
+          this.requestPage,
+          this.BLACKLIST,
+          this.CONFIG.visual.showArchived,
+          this.CONFIG.sort
+        );
+        if (this.isStaleRequest(requestId)) return -1;
 
-          // I believe this stops the requests when switching tabs?
-          if (this.requestQueue.length > 1 && queue !== this.requestQueue[0]) {
-            // Stop this queue from continuing to fetch and append to cards list
-            return -1;
-          }
-
-          if (repoExtensions?.length) {
-            extensions.push(
-              ...repoExtensions.map((extension) => ({
-                ...extension,
-                archived: repo.archived,
-                lastUpdated: repo.pushed_at,
-                created: repo.created_at
-              }))
-            );
-          }
-        }
-
-        sortCardItems(extensions, localStorage.getItem("marketplace:sort") || "stars");
+        const extensions = await this.fetchRepoCards(requestId, pageOfRepos.items, (repo) =>
+          fetchExtensionManifest(repo.contents_url, repo.default_branch, repo.stargazers_count, this.CONFIG.visual.hideInstalled)
+        );
+        if (this.isStaleRequest(requestId)) return -1;
 
         for (const extension of extensions) {
           this.appendCard(extension, "extension", activeTab);
         }
+
+        // Sort every card loaded so far, not just this page's, so later pages
+        // can still take their place at the top of the list.
+        sortCardElements(this.cardList, this.CONFIG.sort);
         this.setState({ cards: this.cardList });
 
-        // First result is null or -1 so it coerces to 1
-        const currentPage = this.requestPage > -1 && this.requestPage ? this.requestPage : 1;
-        // Sets the amount of items that have thus been fetched
-        const soFarResults = ITEMS_PER_REQUEST * (currentPage - 1) + pageOfRepos.page_count;
-        const remainingResults = pageOfRepos.total_count - soFarResults;
-
-        // If still have more results, return next page number to fetch
-        console.debug(`Parsed ${soFarResults}/${pageOfRepos.total_count} extensions`);
-        if (remainingResults > 0) return currentPage + 1;
+        // If there are more results, return the next page number to fetch
+        const nextPage = getNextPage(this.requestPage, pageOfRepos);
+        if (nextPage) return nextPage;
         console.debug("No more extension results");
         break;
       }
@@ -243,18 +261,18 @@ class Grid extends React.Component<
           if (installedStuff[type].length) {
             const installedOfType: CardItem[] = [];
             for (const itemKey of installedStuff[type]) {
-              // TODO: err handling
-              const installedItem = getLocalStorageDataFromKey(itemKey);
-              // I believe this stops the requests when switching tabs?
-              if (this.requestQueue.length > 1 && queue !== this.requestQueue[0]) {
-                // Stop this queue from continuing to fetch and append to cards list
-                return -1;
+              const installedItem = storedCardItemSchema.safeParse(getLocalStorageDataFromKey(itemKey));
+              if (this.isStaleRequest(requestId)) return -1;
+
+              if (!installedItem.success) {
+                console.warn(`Skipping invalid installed item ${itemKey}`, installedItem.error);
+                continue;
               }
 
-              installedOfType.push(installedItem);
+              installedOfType.push(installedItem.data as CardItem);
             }
 
-            sortCardItems(installedOfType, localStorage.getItem("marketplace:sort") || "stars");
+            sortCardItems(installedOfType, this.CONFIG.sort);
 
             for (const item of installedOfType) {
               this.appendCard(item, type as CardType, activeTab);
@@ -268,99 +286,72 @@ class Grid extends React.Component<
         // installed extension do them all in one go, since it's local
       }
       case "Themes": {
-        const pageOfRepos = await getTaggedRepos("spicetify-themes", this.requestPage, this.BLACKLIST, this.CONFIG.visual.showArchived);
-        const themes: CardItem[] = [];
-        for (const repo of pageOfRepos.items) {
-          const repoThemes = await fetchThemeManifest(repo.contents_url, repo.default_branch, repo.stargazers_count);
+        const pageOfRepos = await getTaggedRepos(
+          "spicetify-themes",
+          this.requestPage,
+          this.BLACKLIST,
+          this.CONFIG.visual.showArchived,
+          this.CONFIG.sort
+        );
+        if (this.isStaleRequest(requestId)) return -1;
 
-          // I believe this stops the requests when switching tabs?
-          if (this.requestQueue.length > 1 && queue !== this.requestQueue[0]) {
-            // Stop this queue from continuing to fetch and append to cards list
-            return -1;
-          }
-
-          if (repoThemes?.length) {
-            themes.push(
-              ...repoThemes.map((theme) => ({
-                ...theme,
-                archived: repo.archived,
-                lastUpdated: repo.pushed_at,
-                created: repo.created_at
-              }))
-            );
-          }
-        }
-        this.setState({ cards: this.cardList });
-
-        sortCardItems(themes, localStorage.getItem("marketplace:sort") || "stars");
+        const themes = await this.fetchRepoCards(requestId, pageOfRepos.items, (repo) =>
+          fetchThemeManifest(repo.contents_url, repo.default_branch, repo.stargazers_count)
+        );
+        if (this.isStaleRequest(requestId)) return -1;
 
         for (const theme of themes) {
           this.appendCard(theme, "theme", activeTab);
         }
 
-        // First request is null, so coerces to 1
-        const currentPage = this.requestPage > -1 && this.requestPage ? this.requestPage : 1;
-        // -1 because the page number is 1-indexed
-        const soFarResults = ITEMS_PER_REQUEST * (currentPage - 1) + pageOfRepos.page_count;
-        const remainingResults = pageOfRepos.total_count - soFarResults;
+        // Sort every card loaded so far, not just this page's, so later pages
+        // can still take their place at the top of the list.
+        sortCardElements(this.cardList, this.CONFIG.sort);
+        this.setState({ cards: this.cardList });
 
-        console.debug(`Parsed ${soFarResults}/${pageOfRepos.total_count} themes`);
-        if (remainingResults > 0) return currentPage + 1;
+        // If there are more results, return the next page number to fetch
+        const nextPage = getNextPage(this.requestPage, pageOfRepos);
+        if (nextPage) return nextPage;
         console.debug("No more theme results");
         break;
       }
       case "Apps": {
-        const pageOfRepos = await getTaggedRepos("spicetify-apps", this.requestPage, this.BLACKLIST, this.CONFIG.visual.showArchived);
-        const apps: CardItem[] = [];
+        const pageOfRepos = await getTaggedRepos(
+          "spicetify-apps",
+          this.requestPage,
+          this.BLACKLIST,
+          this.CONFIG.visual.showArchived,
+          this.CONFIG.sort
+        );
+        if (this.isStaleRequest(requestId)) return -1;
 
-        for (const repo of pageOfRepos.items) {
-          const repoApps = await fetchAppManifest(repo.contents_url, repo.default_branch, repo.stargazers_count);
-          // I believe this stops the requests when switching tabs?
-          if (this.requestQueue.length > 1 && queue !== this.requestQueue[0]) {
-            // Stop this queue from continuing to fetch and append to cards list
-            return -1;
-          }
-
-          if (repoApps?.length) {
-            apps.push(
-              ...repoApps.map((app) => ({
-                ...app,
-                archived: repo.archived,
-                lastUpdated: repo.pushed_at,
-                created: repo.created_at
-              }))
-            );
-          }
-        }
-        this.setState({ cards: this.cardList });
-
-        sortCardItems(apps, localStorage.getItem("marketplace:sort") || "stars");
+        const apps = await this.fetchRepoCards(requestId, pageOfRepos.items, (repo) =>
+          fetchAppManifest(repo.contents_url, repo.default_branch, repo.stargazers_count)
+        );
+        if (this.isStaleRequest(requestId)) return -1;
 
         for (const app of apps) {
           this.appendCard(app, "app", activeTab);
         }
 
-        // First request is null, so coerces to 1
-        const currentPage = this.requestPage > -1 && this.requestPage ? this.requestPage : 1;
-        // -1 because the page number is 1-indexed
-        const soFarResults = ITEMS_PER_REQUEST * (currentPage - 1) + pageOfRepos.page_count;
-        const remainingResults = pageOfRepos.total_count - soFarResults;
+        // Sort every card loaded so far, not just this page's, so later pages
+        // can still take their place at the top of the list.
+        sortCardElements(this.cardList, this.CONFIG.sort);
+        this.setState({ cards: this.cardList });
 
-        console.debug(`Parsed ${soFarResults}/${pageOfRepos.total_count} apps`);
-        if (remainingResults > 0) return currentPage + 1;
+        // If there are more results, return the next page number to fetch
+        const nextPage = getNextPage(this.requestPage, pageOfRepos);
+        if (nextPage) return nextPage;
         console.debug("No more app results");
         break;
       }
       case "Snippets": {
         const snippets = this.SNIPPETS;
 
-        if (this.requestQueue.length > 1 && queue !== this.requestQueue[0]) {
-          // Stop this queue from continuing to fetch and append to cards list
-          return -1;
-        }
+        if (this.isStaleRequest(requestId)) return -1;
 
         if (snippets?.length) {
-          sortCardItems(snippets, localStorage.getItem("marketplace:sort") || "stars");
+          sortCardItems(snippets, this.CONFIG.sort);
           for (const snippet of snippets) {
             this.appendCard(snippet, "snippet", activeTab);
           }
@@ -376,26 +367,24 @@ class Grid extends React.Component<
   }
   /**
    * Load a new set of extensions
-   * @param {any} queue An array of the extensions to be loaded
+   * @param {number} requestId The request this load belongs to (see newRequest)
    * @param {number} [quantity] Amount of extensions to be loaded per page. (Defaults to ITEMS_PER_REQUEST constant)
    */
-  async loadAmount(queue: never[], quantity: number = ITEMS_PER_REQUEST) {
+  async loadAmount(requestId: number, quantity: number = ITEMS_PER_REQUEST) {
     this.setState({ rest: false });
     const maxCardQuantity = this.cardList.length + quantity;
 
-    this.requestPage = await this.loadPage(queue);
+    let nextPage = await this.loadPage(requestId);
 
-    while (this.requestPage && this.requestPage !== -1 && this.cardList.length < maxCardQuantity && !this.state.endOfList) {
-      this.requestPage = await this.loadPage(queue);
+    while (!this.isStaleRequest(requestId) && nextPage && this.cardList.length < maxCardQuantity && !this.state.endOfList) {
+      this.requestPage = nextPage;
+      nextPage = await this.loadPage(requestId);
     }
 
-    if (this.requestPage === -1) {
-      this.requestQueue = this.requestQueue.filter((a) => a !== queue);
-      return;
-    }
+    // A newer request owns the page counter and loading state now, so leave them alone
+    if (this.isStaleRequest(requestId)) return;
 
-    // Remove this queue from queue list
-    this.requestQueue.shift();
+    this.requestPage = nextPage;
     this.setState({ rest: true });
   }
 
@@ -405,7 +394,7 @@ class Grid extends React.Component<
    */
   loadMore() {
     if (this.state.rest && !this.endOfList) {
-      this.loadAmount(this.requestQueue[0], ITEMS_PER_REQUEST);
+      this.loadAmount(this.requestId, ITEMS_PER_REQUEST);
     }
   }
 
@@ -433,7 +422,7 @@ class Grid extends React.Component<
     if (installedThemeData) {
       installedThemeData.activeScheme = activeScheme;
       console.debug(installedThemeData);
-      localStorage.setItem(installedThemeKey, JSON.stringify(installedThemeData));
+      marketplaceStorage.setItem(installedThemeKey, JSON.stringify(installedThemeData));
     } else {
       console.debug("No installed theme data");
     }
@@ -533,6 +522,49 @@ class Grid extends React.Component<
 
   render() {
     const { t } = this.props;
+
+    const cardSections = [
+      { handle: "extension", name: "Extensions" },
+      { handle: "theme", name: "Themes" },
+      { handle: "snippet", name: "Snippets" },
+      { handle: "app", name: "Apps" }
+    ].map((cardType) => {
+      const cardsOfType = this.cardList
+        .filter((card) => card.props.type === cardType.handle)
+        .filter((card) => {
+          const searchValue = this.state.searchValue.trim().toLowerCase();
+          const { title, user, authors, tags } = card.props.item;
+
+          return (
+            !searchValue ||
+            title.toLowerCase().includes(searchValue) ||
+            user?.toLowerCase().includes(searchValue) ||
+            authors?.some((author) => author.name.toLowerCase().includes(searchValue)) ||
+            [...(tags ?? [])]?.some((tag) => tag.toLowerCase().includes(searchValue))
+          );
+        })
+        .map((card) => {
+          return React.cloneElement(card, {
+            activeThemeKey: this.state.activeThemeKey,
+            key: card.key
+          });
+        })
+        .filter((card, index, cards) => cards.findIndex((c) => c.key === card.key) === index);
+
+      if (!cardsOfType.length) return null;
+
+      return (
+        <div className="marketplace-content">
+          <h2 className="marketplace-card-type-heading">{t(`tabs.${cardType.name}`)}</h2>
+          <div className="marketplace-grid main-gridContainer-gridContainer main-gridContainer-fixedWidth" data-tab={this.CONFIG.activeTab}>
+            {cardsOfType}
+          </div>
+        </div>
+      );
+    });
+
+    const installedTabIsEmpty = this.CONFIG.activeTab === "Installed" && this.state.endOfList && cardSections.every((section) => section === null);
+
     return (
       <section className="contentSpacing">
         <div className="marketplace-header">
@@ -606,61 +638,12 @@ class Grid extends React.Component<
             </Tooltip>
           </div>
         </div>
-        {/* Add a header and grid for each card type if it has any cards */}
-        {[
-          { handle: "extension", name: "Extensions" },
-          { handle: "theme", name: "Themes" },
-          { handle: "snippet", name: "Snippets" },
-          { handle: "app", name: "Apps" }
-        ].map((cardType) => {
-          const cardsOfType = this.cardList
-            .filter((card) => card.props.type === cardType.handle)
-            .filter((card) => {
-              const searchValue = this.state.searchValue.trim().toLowerCase();
-              const { title, user, authors, tags } = card.props.item;
-
-              return (
-                !searchValue ||
-                title.toLowerCase().includes(searchValue) ||
-                user?.toLowerCase().includes(searchValue) ||
-                authors?.some((author) => author.name.toLowerCase().includes(searchValue)) ||
-                [...(tags ?? [])]?.some((tag) => tag.toLowerCase().includes(searchValue))
-              );
-            })
-            .map((card) => {
-              // Clone the cards and update the prop to trigger re-render
-              return React.cloneElement(card, {
-                activeThemeKey: this.state.activeThemeKey,
-                key: card.key
-              });
-            })
-            .filter(
-              (
-                card,
-                index,
-                cards // Filter out duplicates to prevent spamming
-              ) => cards.findIndex((c) => c.key === card.key) === index
-            );
-
-          if (cardsOfType.length) {
-            return (
-              // Add a header for the card type
-              <div className="marketplace-content">
-                {/* Add a header for the card type */}
-                <h2 className="marketplace-card-type-heading">{t(`tabs.${cardType.name}`)}</h2>
-                {/* Add the grid and cards */}
-                <div
-                  className="marketplace-grid main-gridContainer-gridContainer main-gridContainer-fixedWidth"
-                  data-tab={this.CONFIG.activeTab}
-                  data-card-type={t(`tabs.${cardType.name}`)} // This is used for the "no installed x" in css
-                >
-                  {cardsOfType}
-                </div>
-              </div>
-            );
-          }
-          return null;
-        })}
+        {cardSections}
+        {installedTabIsEmpty ? (
+          <div className="marketplace-empty-installed">
+            {this.state.searchValue.trim() ? t("grid.noInstalledMatches") : t("grid.nothingInstalled")}
+          </div>
+        ) : null}
         {/* Add snippets button if on snippets tab */}
         {this.CONFIG.activeTab === "Snippets" ? (
           <Button classes={["marketplace-add-snippet-btn"]} onClick={() => openModal("ADD_SNIPPET")}>

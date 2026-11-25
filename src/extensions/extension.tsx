@@ -4,8 +4,9 @@
 
 import { t } from "i18next";
 
-import { ITEMS_PER_REQUEST, LOCALSTORAGE_KEYS, MARKETPLACE_VERSION } from "../constants";
-import { fetchAppManifest, fetchExtensionManifest, fetchThemeManifest, getBlacklist } from "../logic/FetchRemotes";
+import { LOCALSTORAGE_KEYS, MARKETPLACE_VERSION } from "../constants";
+import { fetchAppManifest, fetchExtensionManifest, fetchThemeManifest, getBlacklist, getNextPage, getTaggedRepos } from "../logic/FetchRemotes";
+import { hydrateMarketplaceStorage, marketplaceStorage } from "../logic/Storage";
 import {
   addExtensionToSpicetifyConfig,
   exportMarketplace,
@@ -18,7 +19,6 @@ import {
   injectColourScheme,
   // TODO: there's a slightly different copy of this function in Card.ts?
   injectUserCSS,
-  isBlacklisted,
   isGithubRawUrl,
   parseCSS,
   resetMarketplace
@@ -38,6 +38,15 @@ import type { RepoType } from "../types/marketplace-types";
 
   // Show message on start.
   console.log(`Initializing Spicetify Marketplace v${MARKETPLACE_VERSION}`);
+  try {
+    await hydrateMarketplaceStorage();
+  } catch (error) {
+    // The installed lists are unknown here, so loading nothing is safer than
+    // rebuilding Spicetify's config from an empty view.
+    console.error("Marketplace storage could not be read", error);
+    Spicetify.showNotification(t("notifications.storageUnreadable"), true, 5000);
+    return;
+  }
 
   // Expose useful methods in global context
   window.Marketplace = {
@@ -53,7 +62,7 @@ import type { RepoType } from "../types/marketplace-types";
   const initializeExtension = (extensionKey: string) => {
     const extensionManifest = getLocalStorageDataFromKey(extensionKey);
     // Abort if no manifest found or no extension URL (i.e. a theme)
-    if (!extensionManifest || !extensionManifest.extensionURL) return;
+    if (!extensionManifest?.extensionURL) return;
 
     console.debug("Initializing extension: ", extensionManifest);
 
@@ -89,15 +98,16 @@ import type { RepoType } from "../types/marketplace-types";
 
     // Inject colour scheme if found
     if (themeManifest.schemes) {
-      const activeScheme = themeManifest.schemes[themeManifest.activeScheme];
+      const activeSchemeName = themeManifest.activeScheme ?? Object.keys(themeManifest.schemes)[0];
+      const activeScheme = themeManifest.schemes[activeSchemeName];
       injectColourScheme(activeScheme);
 
       // Add to Spicetify.Config
       // @ts-expect-error: `color_scheme` is read-only type in types
-      Spicetify.Config.color_scheme = themeManifest.activeScheme;
-      if (localStorage.getItem(LOCALSTORAGE_KEYS.albumArtBasedColor) === "true") {
+      Spicetify.Config.color_scheme = activeSchemeName;
+      if (marketplaceStorage.getItem(LOCALSTORAGE_KEYS.albumArtBasedColor) === "true") {
         initAlbumArtBasedColor(activeScheme);
-      } else if (localStorage.getItem(LOCALSTORAGE_KEYS.colorShift) === "true") {
+      } else if (marketplaceStorage.getItem(LOCALSTORAGE_KEYS.colorShift) === "true") {
         initColorShiftLoop(themeManifest.schemes);
       }
     } else {
@@ -114,8 +124,13 @@ import type { RepoType } from "../types/marketplace-types";
     if (existingMarketplaceThemeCSS) existingMarketplaceThemeCSS.remove();
 
     // Add theme css
-    const userCSS = await parseCSS(themeManifest, tld);
-    injectUserCSS(userCSS);
+    // A CSS failure shouldn't stop the theme's included JS from loading below
+    try {
+      const userCSS = await parseCSS(themeManifest, tld);
+      injectUserCSS(userCSS);
+    } catch (error) {
+      console.error("Failed to inject theme CSS", error);
+    }
 
     // Add to Spicetify.Config
     // @ts-expect-error: `current_theme` is read-only type in types
@@ -173,8 +188,8 @@ import type { RepoType } from "../types/marketplace-types";
   }
 
   const { current_theme: localTheme } = Spicetify.Config;
-  localStorage.setItem(LOCALSTORAGE_KEYS.localTheme, localTheme);
-  const installedTheme = localStorage.getItem(LOCALSTORAGE_KEYS.themeInstalled);
+  marketplaceStorage.setItem(LOCALSTORAGE_KEYS.localTheme, localTheme);
+  const installedTheme = marketplaceStorage.getItem(LOCALSTORAGE_KEYS.themeInstalled);
   if (installedTheme) {
     if (localTheme.toLocaleLowerCase() !== "marketplace") {
       Spicetify.showNotification(t("notifications.wrongLocalTheme"), true, 5000);
@@ -192,30 +207,11 @@ import type { RepoType } from "../types/marketplace-types";
  */
 async function queryRepos(type: RepoType, pageNum = 1) {
   const BLACKLIST: string[] = JSON.parse(window.sessionStorage.getItem("marketplace:blacklist") || "[]");
+  const sortMode = marketplaceStorage.getItem(LOCALSTORAGE_KEYS.sort) || "stars";
 
-  let url = `https://api.github.com/search/repositories?per_page=${ITEMS_PER_REQUEST}&q=${encodeURIComponent(`topic:spicetify-${type}s`)}`;
-  if (pageNum) url += `&page=${pageNum}`;
-
-  const allRepos =
-    JSON.parse(window.sessionStorage.getItem(`spicetify-${type}s-page-${pageNum}`) || "null") ||
-    (await fetch(url)
-      .then((res) => res.json())
-      .catch(() => null));
-
-  if (!allRepos?.items) {
-    Spicetify.showNotification(t("notifications.tooManyRequests"), true, 5000);
-    return { items: [] };
-  }
-
-  window.sessionStorage.setItem(`spicetify-${type}s-page-${pageNum}`, JSON.stringify(allRepos));
-
-  const filteredResults = {
-    ...allRepos,
-    page_count: allRepos.items.length,
-    items: allRepos.items.filter((item) => !isBlacklisted(item.html_url, BLACKLIST))
-  };
-
-  return filteredResults;
+  // Go through getTaggedRepos so the request and its sessionStorage cache key match
+  // what the Grid asks for, and opening Marketplace reuses these pages.
+  return getTaggedRepos(`spicetify-${type}s`, pageNum, BLACKLIST, true, sortMode);
 }
 
 /**
@@ -228,14 +224,11 @@ async function loadPageRecursive(type: RepoType, pageNum: number) {
   const pageOfRepos = await queryRepos(type, pageNum);
   appendInformationToLocalStorage(pageOfRepos, type);
 
-  // Sets the amount of items that have thus been fetched
-  const soFarResults = ITEMS_PER_REQUEST * pageNum + pageOfRepos.page_count;
   console.debug({ pageOfRepos });
-  const remainingResults = pageOfRepos.total_count - soFarResults;
 
-  // If still have more results, recursively fetch next page
-  console.debug(`Parsed ${soFarResults}/${pageOfRepos.total_count} ${type}s`);
-  if (remainingResults > 0) return await loadPageRecursive(type, pageNum + 1);
+  // Shares getNextPage with the Grid, so the preload requests the same pages (and cache keys)
+  const nextPage = getNextPage(pageNum, pageOfRepos);
+  if (nextPage) return await loadPageRecursive(type, nextPage);
   console.debug(`No more ${type} results`);
 }
 
@@ -244,6 +237,9 @@ async function loadPageRecursive(type: RepoType, pageNum: number) {
   window.sessionStorage.clear();
   const BLACKLIST = await getBlacklist();
   window.sessionStorage.setItem("marketplace:blacklist", JSON.stringify(BLACKLIST));
+  // queryRepos reads the saved sort mode, so wait for storage to load first.
+  // init() already reports a failure to the user.
+  await hydrateMarketplaceStorage().catch(() => undefined);
 
   // TODO: does this work?
   // The recursion isn't super clean...

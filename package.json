@@ -1,12 +1,12 @@
 {
   "name": "marketplace",
-  "version": "1.0.8",
+  "version": "1.0.12",
+  "private": true,
   "homepage": "https://github.com/manolopro3333/marketplace",
-  "repository": "github:manolopro3333/marketplace",
   "bugs": {
     "url": "https://github.com/manolopro3333/marketplace/issues"
   },
-  "packageManager": "pnpm@9.0.6",
+  "repository": "github:manolopro3333/marketplace",
   "scripts": {
     "build": "spicetify-creator",
     "build:local": "spicetify-creator --out=dist --minify",
@@ -19,34 +19,35 @@
     "prepare": "husky",
     "update-types": "curl -s -o src/types/spicetify.d.ts https://raw.githubusercontent.com/manolopro3333/cli/main/globals.d.ts"
   },
-  "engines": {
-    "yarn": "please-use-pnpm",
-    "npm": "please-use-pnpm",
-    "pnpm": ">=8",
-    "node": ">=20"
+  "dependencies": {
+    "@biomejs/biome": "2.5.11",
+    "@hello-pangea/dnd": "18.0.1",
+    "chroma-js": "3.2.0",
+    "dexie": "4.4.5",
+    "i18next": "26.4.0",
+    "prismjs": "1.30.0",
+    "react-dropdown": "1.11.0",
+    "react-i18next": "17.0.12",
+    "react-simple-code-editor": "0.14.1",
+    "semver": "7.8.5",
+    "zod": "4.5.1"
   },
   "devDependencies": {
-    "@types/chroma-js": "^3.1.2",
-    "@types/react": "19.2.7",
-    "@types/react-dom": "19.2.3",
-    "@types/semver": "^7.7.1",
-    "@types/wicg-file-system-access": "^2023.10.7",
-    "copyfiles": "^2.4.1",
-    "husky": "^9.1.7",
-    "spicetify-creator": "^1.0.17",
-    "typescript": "^5.9.3"
+    "@types/chroma-js": "3.1.2",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.5",
+    "@types/semver": "7.8.0",
+    "@types/wicg-file-system-access": "2023.10.7",
+    "copyfiles": "2.4.1",
+    "husky": "9.1.7",
+    "spicetify-creator": "1.0.17",
+    "typescript": "6.0.3"
   },
-  "dependencies": {
-    "@biomejs/biome": "^2.4.13",
-    "@hello-pangea/dnd": "^18.0.1",
-    "chroma-js": "^3.2.0",
-    "i18next": "^26.0.3",
-    "i18next-browser-languagedetector": "^8.2.0",
-    "prismjs": "^1.30.0",
-    "react-dropdown": "^1.11.0",
-    "react-i18next": "^17.0.6",
-    "react-simple-code-editor": "^0.14.1",
-    "semver": "^7.7.3"
+  "engines": {
+    "node": ">=24",
+    "npm": "please-use-pnpm",
+    "pnpm": ">=11",
+    "yarn": "please-use-pnpm"
   },
-  "private": true
+  "packageManager": "pnpm@11.9.0"
 }

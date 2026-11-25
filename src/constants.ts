@@ -20,8 +20,8 @@ export const LOCALSTORAGE_KEYS = {
   colorShift: `${STORAGE_KEY_PREFIX}:colorShift`
 };
 
-// Initalize topbar tabs
-// Data initalized in TabBar.js
+// Initialize topbar tabs
+// Data initialized in TabBar.js
 export const ALL_TABS: TabItemConfig[] = [
   { name: "Extensions", enabled: true },
   { name: "Themes", enabled: true },
@@ -33,6 +33,9 @@ export const ALL_TABS: TabItemConfig[] = [
 // Max GitHub API items per page
 // https://docs.github.com/en/rest/reference/search#search-repositories
 export const ITEMS_PER_REQUEST = 100;
+
+// Each manifest fetch spins up a Worker, and raw.githubusercontent throttles bursts
+export const MANIFEST_FETCH_CONCURRENCY = 6;
 
 export const CUSTOM_APP_PATH = "/marketplace";
 
